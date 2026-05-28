@@ -1,0 +1,6 @@
+raw_folder: ../data/raw
+processed_folder: ../data/processed
+chunk_size: 100000
+embedding_model: sentence-transformers/LaBSE
+ocr_model: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+vector_model: BAAI/bge-m3

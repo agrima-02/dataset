@@ -1,0 +1,10 @@
+[05/28/26 15:50:56] INFO Processed mono: ma10_translation-en-patton.json
+[05/28/26 15:50:56] INFO Processed mono: pali raw.htm
+[05/28/26 15:50:56] INFO Processed parallel TSV: parallel_sanskrit_chinese.tsv
+[05/28/26 15:50:56] INFO Processed parallel TSV: parallel_sanskrit_tibetan.tsv
+[05/28/26 15:50:56] INFO Processed segment pair: pli-tv-bi-pm_root-pli-ms.json <-> pli-tv-bi-pm_translation-en-brahmali.json
+[05/28/26 15:50:56] INFO Processed mono: pli-tv-bi-pm_translation-en-brahmali.json
+[05/28/26 15:50:56] INFO Processed mono: sanskrit raw 1.csv
+[05/28/26 15:50:56] INFO Processed mono: sanskrit raw 2.json
+[05/28/26 15:50:56] INFO Processed mono: tibetan raw.txt
+[05/28/26 15:50:56] INFO Pipeline completed
