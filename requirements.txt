@@ -1,0 +1,15 @@
+polars
+pyarrow
+selectolax
+ijson
+langdetect
+sentence-transformers
+datasets
+orjson
+rich
+torch
+faiss-cpu
+numpy
+scikit-learn
+pyyaml
+duckdb
