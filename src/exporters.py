@@ -1,71 +1,20 @@
 import pyarrow as pa
 import pyarrow.parquet as pq
-from datasets import Dataset
+from pathlib import Path
 
-# Export CSV
-def export_csv(df, output_path):
-
-    df.to_csv(
-        output_path,
-        index=False,
-        encoding="utf-8",
-        quoting=1
-    )
-
-    print(
-        "CSV exported"
-    )
-
-
-# Export Parquet
-def export_parquet(df, output_path):
-
-    table = pa.Table.from_pandas(df)
-
-    pq.write_table(
-        table,
-        output_path
-    )
-
-    print(
-        "Parquet exported"
-    )
-
-
-# Export Arrow
-def export_arrow(df, output_path):
-
-    table = pa.Table.from_pandas(df)
-
-    with pa.OSFile(
-        output_path,
-        "wb"
-    ) as sink:
-
-        with pa.ipc.new_file(
-            sink,
-            table.schema
-        ) as writer:
-
-            writer.write_table(table)
-
-    print(
-        "Arrow exported"
-    )
-
-
-# Export Hugging Face dataset
-def export_huggingface(
-    df,
-    output_path
-):
-
-    dataset = Dataset.from_pandas(df)
-
-    dataset.save_to_disk(
-        output_path
-    )
-
-    print(
-        "Hugging Face dataset exported"
-    )
+class StreamingParquetWriter:
+    def __init__(self, output_path):
+        self.output_path = output_path
+        self.writer = None
+    def write(self, df):
+        table = df.to_arrow()
+        if self.writer is None:
+            self.writer = pq.ParquetWriter(
+                self.output_path,
+                table.schema,
+                compression='zstd'
+            )
+        self.writer.write_table(table)
+    def close(self):
+        if self.writer:
+            self.writer.close()
