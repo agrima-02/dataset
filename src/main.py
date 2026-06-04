@@ -1,28 +1,16 @@
 import os
-import polars as pl
+
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    as_completed
+)
 
 from logger import setup_logger
 from config import CONFIG
 from path_validator import validate_paths
 
-from loaders import (
-    load_txt_stream,
-    load_json,
-    load_html,
-    load_csv,
-    load_tsv
-)
-
-from cleaners import (
-    clean_text_column
-)
-
 from exporters import (
     StreamingParquetWriter
-)
-
-from language_detector import (
-    detect_language
 )
 
 from statistics import (
@@ -33,253 +21,516 @@ from versioning import (
     save_metadata
 )
 
-from parallel_builder import (
+from checkpoint import (
+    load_checkpoint,
+    mark_processed
+)
 
+from processors.monolingual_processor import (
+    process_monolingual_file
+)
+
+from processors.parallel_processor import (
     process_parallel_table,
-
     build_parallel_from_segments
 )
 
+from exceptions import (
+
+    DatasetLoadError,
+
+    DatasetSchemaError,
+
+    DatasetAlignmentError,
+
+    DatasetValidationError,
+
+    DatasetWriteError,
+
+    DatasetCheckpointError,
+
+    DatasetLanguageError
+)
 
 logger = setup_logger()
-RAW_FOLDER = CONFIG['raw_folder']
-OUTPUT_FOLDER = CONFIG['processed_folder']
 
-def process_monolingual(path):
-    try:
-        # TXT
-        if path.endswith('.txt'):
-            rows = list(
-                load_txt_stream(path)
-            )
-            df = pl.DataFrame(rows)
-        # JSON
-        elif path.endswith('.json'):
-            df = load_json(path)
-        # HTML
-        elif (
-            path.endswith('.html')
-            or path.endswith('.htm')
-        ):
-            df = load_html(path)
-        # CSV
-        elif path.endswith('.csv'):
-            df = load_csv(path)
+RAW_FOLDER = CONFIG["raw_folder"]
 
-        else:
-            return None
+OUTPUT_FOLDER = CONFIG["processed_folder"]
 
-        if 'text' not in df.columns:
-            return None
+MAX_WORKERS = min(
+    os.cpu_count() or 4,
+    8
+)
 
-        sample = (
-            df[0, 'text']
-            if len(df) > 0
-            else ''
-        )
-        language = detect_language(
-            sample
-        )
-        required_columns = [
-            'segment_id',
-            'text',
-            'language',
-            'dataset_type'
-        ]
 
-        if 'segment_id' not in df.columns:
-            df = df.with_columns(
-                pl.lit("")
-                .cast(pl.Utf8)
-                .alias('segment_id')
-            )
+def find_segment_pairs(files):
 
-        else:
-            df = df.with_columns(
-                pl.col('segment_id')
-                .cast(pl.Utf8)
-            )
-        df = df.with_columns([
-            pl.lit(language)
-            .alias('language'),
-            pl.lit('monolingual')
-            .alias('dataset_type')
-        ])
+    pairs = []
 
-        df = df.select(
-            required_columns
-        )
+    for file in files:
 
-        df = df.with_columns([
-            pl.col('segment_id')
-            .cast(pl.Utf8),
-            pl.col('text')
-            .cast(pl.Utf8),
-            pl.col('language')
-            .cast(pl.Utf8),
-            pl.col('dataset_type')
-            .cast(pl.Utf8)
-        ])
+        if "_root-" not in file:
+            continue
 
-        df = clean_text_column(
-            df,
-            'text'
-        )
-        return df
+        prefix = file.split(
+            "_root-"
+        )[0]
 
-    except FileNotFoundError as e:
-        logger.error(e)
+        for other in files:
 
-    except PermissionError as e:
-        logger.error(e)
+            if (
 
-    except UnicodeDecodeError as e:
-        logger.error(e)
+                other.startswith(prefix)
 
-    except ValueError as e:
-        logger.error(e)
+                and
 
-    except Exception as e:
-        logger.exception(e)
+                "_translation-" in other
 
-    return None
+            ):
 
-if __name__ == '__main__':
+                pairs.append(
+                    (file, other)
+                )
+
+                break
+
+    return pairs
+
+
+if __name__ == "__main__":
+
     validate_paths(
+
         RAW_FOLDER,
+
         OUTPUT_FOLDER
     )
-    mono_writer = StreamingParquetWriter(
-        f'{OUTPUT_FOLDER}/mono.parquet'
-    )
-
-    parallel_writer = StreamingParquetWriter(
-        f'{OUTPUT_FOLDER}/parallel.parquet'
-    )
-
-    total_mono_rows = 0
-    total_parallel_rows = 0
 
     files = os.listdir(
         RAW_FOLDER
     )
 
-    processed_segment_pairs = set()
+    processed_files = (
+        load_checkpoint()
+    )
+
+    mono_files = []
+
+    parallel_tsv_files = []
+
     for file in files:
-        path = os.path.join(
-            RAW_FOLDER,
-            file
-        )
-        # =========================
-        # TSV PARALLEL TABLES
-        # =========================
 
         if file.endswith(".tsv"):
-            df = process_parallel_table(
-                path
-            )
-            if df is not None:
-                parallel_writer.write(df)
-                total_parallel_rows += len(df)
-                logger.info(
-                    f'Processed parallel TSV: {file}'
-                )
-            continue
-        # =========================
-        # GENERIC SEGMENT JSON PAIRS
-        # =========================
 
-        if "_root-" in file:
-            prefix = file.split("_root-")[0]
-            translation_file = None
-            for other in files:
-                if (
-                    other.startswith(prefix)
-                    and "_translation-" in other
-                ):
-                    translation_file = other
-                    break
-            
-            if translation_file is None:
-                continue
-
-            pair_key = (
-                file,
-                translation_file
+            parallel_tsv_files.append(
+                file
             )
 
-            if pair_key in processed_segment_pairs:
-                continue
+        elif (
 
-            aligned = build_parallel_from_segments(
-                os.path.join(
-                    RAW_FOLDER,
-                    file
-                ),
+            "_root-" not in file
 
-                os.path.join(
-                    RAW_FOLDER,
-                    translation_file
-                )
+            and
+
+            "_translation-" not in file
+
+        ):
+
+            mono_files.append(
+                file
             )
 
-            if aligned is not None:
-                parallel_writer.write(
-                    aligned
-                )
-                total_parallel_rows += len(
-                    aligned
-                )
-                logger.info(
-                    f'Processed segment pair: '
-                    f'{file} <-> {translation_file}'
-                )
-            processed_segment_pairs.add(
-                pair_key
-            )
+    segment_pairs = find_segment_pairs(
+        files
+    )
 
-            continue
-        # =========================
-        # MONOLINGUAL
-        # =========================
+    total_mono_rows = 0
 
-        df = process_monolingual(
-            path
+    total_parallel_rows = 0
+
+    with StreamingParquetWriter(
+
+        f"{OUTPUT_FOLDER}/mono.parquet"
+
+    ) as mono_writer, StreamingParquetWriter(
+
+        f"{OUTPUT_FOLDER}/parallel.parquet"
+
+    ) as parallel_writer:
+
+        # ====================
+        # MONOLINGUAL FILES
+        # ====================
+
+        with ThreadPoolExecutor(
+            max_workers=MAX_WORKERS
+        ) as executor:
+
+            future_to_file = {
+
+                executor.submit(
+
+                    process_monolingual_file,
+
+                    os.path.join(
+                        RAW_FOLDER,
+                        file
+                    ),
+
+                    mono_writer
+
+                ): file
+
+                for file in mono_files
+
+                if file not in processed_files
+            }
+
+            for future in as_completed(
+                future_to_file
+            ):
+
+                file = future_to_file[
+                    future
+                ]
+
+                try:
+
+                    rows = future.result()
+
+                    total_mono_rows += rows
+
+                    mark_processed(
+
+                        file,
+
+                        processed_files
+                    )
+
+                    logger.info(
+
+                        f"Completed mono: {file}"
+                    )
+
+                except DatasetLoadError:
+
+                    logger.exception(
+                        f"Load failed: {file}"
+                    )
+
+                except DatasetSchemaError:
+
+                    logger.exception(
+                        f"Schema failed: {file}"
+                    )
+
+                except DatasetValidationError:
+
+                    logger.exception(
+                        f"Validation failed: {file}"
+                    )
+
+                except Exception:
+
+                    logger.exception(
+                        f"Unexpected error: {file}"
+                    )
+                except DatasetWriteError:
+
+                    logger.exception(
+                        f"Write failed: {file}"
+                    )
+
+                except DatasetCheckpointError:
+
+                    logger.exception(
+                        f"Checkpoint failed: {file}"
+                    )
+
+                except DatasetLanguageError:
+
+                    logger.exception(
+                        f"Language detection failed: {file}"
+                    )
+
+        # ====================
+        # PARALLEL TSV FILES
+        # ====================
+
+        with ThreadPoolExecutor(
+            max_workers=MAX_WORKERS
+        ) as executor:
+
+            future_to_file = {
+
+                executor.submit(
+
+                    process_parallel_table,
+
+                    os.path.join(
+                        RAW_FOLDER,
+                        file
+                    ),
+
+                    parallel_writer
+
+                ): file
+
+                for file in parallel_tsv_files
+
+                if file not in processed_files
+            }
+
+            for future in as_completed(
+                future_to_file
+            ):
+
+                file = future_to_file[
+                    future
+                ]
+
+                try:
+
+                    rows = future.result()
+
+                    total_parallel_rows += rows
+
+                    mark_processed(
+
+                        file,
+
+                        processed_files
+                    )
+
+                    logger.info(
+
+                        f"Completed parallel TSV: {file}"
+                    )
+
+                except DatasetLoadError:
+
+                    logger.exception(
+                        f"Load failed: {file}"
+                    )
+
+                except DatasetSchemaError:
+
+                    logger.exception(
+                        f"Schema failed: {file}"
+                    )
+
+                except DatasetValidationError:
+
+                    logger.exception(
+                        f"Validation failed: {file}"
+                    )
+
+                except DatasetWriteError:
+
+                    logger.exception(
+                        f"Write failed: {file}"
+                    )
+
+                except DatasetCheckpointError:
+
+                    logger.exception(
+                        f"Checkpoint failed: {file}"
+                    )
+
+                except DatasetLanguageError:
+
+                    logger.exception(
+                        f"Language detection failed: {file}"
+                    )
+
+                except Exception:
+
+                    logger.exception(
+                        f"Unexpected error: {file}"
+                    )
+        # ====================
+        # SEGMENT ALIGNMENT
+        # ====================
+
+        with ThreadPoolExecutor(
+            max_workers=MAX_WORKERS
+        ) as executor:
+
+            future_to_pair = {
+
+                executor.submit(
+
+                    build_parallel_from_segments,
+
+                    os.path.join(
+                        RAW_FOLDER,
+                        src_file
+                    ),
+
+                    os.path.join(
+                        RAW_FOLDER,
+                        tgt_file
+                    ),
+
+                    parallel_writer
+
+                ): (src_file, tgt_file)
+
+                for src_file, tgt_file in segment_pairs
+
+                if not (
+
+                    src_file in processed_files
+
+                    and
+
+                    tgt_file in processed_files
+                )
+            }
+
+            for future in as_completed(
+                future_to_pair
+            ):
+
+                src_file, tgt_file = (
+
+                    future_to_pair[
+                        future
+                    ]
+                )
+
+                try:
+
+                    rows = future.result()
+
+                    total_parallel_rows += rows
+
+                    mark_processed(
+                        src_file,
+                        processed_files
+                    )
+
+                    mark_processed(
+                        tgt_file,
+                        processed_files
+                    )
+
+                    logger.info(
+
+                        f"Completed segment pair: "
+
+                        f"{src_file} <-> {tgt_file}"
+                    )
+
+                except DatasetLoadError:
+
+                    logger.exception(
+
+                        f"Load failed: "
+
+                        f"{src_file} <-> {tgt_file}"
+                    )
+
+                except DatasetSchemaError:
+
+                    logger.exception(
+
+                        f"Schema failed: "
+
+                        f"{src_file} <-> {tgt_file}"
+                    )
+
+                except DatasetAlignmentError:
+
+                    logger.exception(
+
+                        f"Alignment failed: "
+
+                        f"{src_file} <-> {tgt_file}"
+                    )
+
+                except DatasetValidationError:
+
+                    logger.exception(
+
+                        f"Validation failed: "
+
+                        f"{src_file} <-> {tgt_file}"
+                    )
+
+                except DatasetWriteError:
+
+                    logger.exception(
+
+                        f"Write failed: "
+
+                        f"{src_file} <-> {tgt_file}"
+                    )
+
+                except DatasetCheckpointError:
+
+                    logger.exception(
+
+                        f"Checkpoint failed: "
+
+                        f"{src_file} <-> {tgt_file}"
+                    )
+
+                except DatasetLanguageError:
+
+                    logger.exception(
+
+                        f"Language detection failed: "
+
+                        f"{src_file} <-> {tgt_file}"
+                    )
+
+                except Exception:
+
+                    logger.exception(
+
+                        f"Unexpected error: "
+
+                        f"{src_file} <-> {tgt_file}"
+                    )
+
+    try:
+
+        save_metadata(
+
+            f"{OUTPUT_FOLDER}/mono_metadata.json",
+
+            "monolingual",
+
+            total_mono_rows
         )
-        if df is None:
-            continue
 
-        mono_writer.write(df)
-        total_mono_rows += len(df)
+        save_metadata(
 
-        logger.info(
-            f'Processed mono: {file}'
+            f"{OUTPUT_FOLDER}/parallel_metadata.json",
+
+            "parallel",
+
+            total_parallel_rows
         )
 
-    mono_writer.close()
-    parallel_writer.close()
-    save_metadata(
-        f'{OUTPUT_FOLDER}/mono_metadata.json',
-        'monolingual',
-        total_mono_rows
-    )
+        save_stats(
 
-    save_metadata(
-        f'{OUTPUT_FOLDER}/parallel_metadata.json',
-        'parallel',
-        total_parallel_rows
-    )
+            total_mono_rows,
 
-    save_stats(
-        total_mono_rows,
-        f'{OUTPUT_FOLDER}/mono_stats.json'
-    )
+            f"{OUTPUT_FOLDER}/mono_stats.json"
+        )
 
-    save_stats(
-        total_parallel_rows,
-        f'{OUTPUT_FOLDER}/parallel_stats.json'
-    )
+        save_stats(
 
-    logger.info(
-        'Pipeline completed'
-    )
+            total_parallel_rows,
+
+            f"{OUTPUT_FOLDER}/parallel_stats.json"
+        )
+
+    except Exception:
+
+        logger.exception(
+            "Failed saving metadata/stats"
+        )

@@ -1,45 +1,221 @@
 import polars as pl
-import orjson
-from selectolax.parser import HTMLParser
+import ijson
+import re
 
-def load_txt_stream(path):
-    with open(path, 'r', encoding='utf-8') as file:
-        for line in file:
-            line = line.strip()
-            if line:
-                yield {'text': line}
+from exceptions import (
+    DatasetLoadError
+)
 
-def load_json(path):
-    with open(path, 'rb') as file:
-        data = orjson.loads(file.read())
-    rows = []
-    if isinstance(data, dict):
-        for k, v in data.items():
-            rows.append({
-                'segment_id': k,
-                'text': v
-            })
+DEFAULT_BATCH_SIZE = 100000
 
-    elif isinstance(data, list):
-        rows = data
-    return pl.DataFrame(rows)
 
-def load_html(path):
-    rows = []
-    with open(path, 'r', encoding='utf-8') as file:
-        tree = HTMLParser(file.read())
-    text = tree.body.text()
-    for line in text.split('\n'):
-        line = line.strip()
-        if line:
-            rows.append({'text': line})
-    return pl.DataFrame(rows)
+def load_txt_chunks(
+    path,
+    chunk_size=DEFAULT_BATCH_SIZE
+):
 
-def load_csv(path):
-    return pl.read_csv(path)
-    
-def load_tsv(path):
-    return pl.read_csv(
-        path,
-        separator="\t"
-    )
+    try:
+
+        batch = []
+
+        with open(
+            path,
+            "r",
+            encoding="utf-8",
+            errors="replace"
+        ) as file:
+
+            for line in file:
+
+                line = line.strip()
+
+                if not line:
+                    continue
+
+                batch.append({
+                    "text": line
+                })
+
+                if len(batch) >= chunk_size:
+
+                    yield pl.DataFrame(batch)
+
+                    batch = []
+
+        if batch:
+
+            yield pl.DataFrame(batch)
+
+    except FileNotFoundError:
+
+        raise DatasetLoadError(
+            f"File not found: {path}"
+        )
+
+    except PermissionError:
+
+        raise DatasetLoadError(
+            f"Permission denied: {path}"
+        )
+
+    except Exception as e:
+
+        raise DatasetLoadError(
+            f"TXT loader failed for {path}: {e}"
+        )
+
+
+def load_csv_batches(
+    path,
+    batch_size=DEFAULT_BATCH_SIZE
+):
+
+    try:
+
+        reader = pl.read_csv_batched(
+            path,
+            batch_size=batch_size
+        )
+
+        while True:
+
+            batches = reader.next_batches(1)
+
+            if not batches:
+                break
+
+            yield batches[0]
+
+    except Exception as e:
+
+        raise DatasetLoadError(
+            f"CSV loader failed for {path}: {e}"
+        )
+
+
+def load_tsv_batches(
+    path,
+    batch_size=DEFAULT_BATCH_SIZE
+):
+
+    try:
+
+        reader = pl.read_csv_batched(
+            path,
+            separator="\t",
+            batch_size=batch_size
+        )
+
+        while True:
+
+            batches = reader.next_batches(1)
+
+            if not batches:
+                break
+
+            yield batches[0]
+
+    except Exception as e:
+
+        raise DatasetLoadError(
+            f"TSV loader failed for {path}: {e}"
+        )
+
+
+HTML_TAG_PATTERN = re.compile(
+    r"<[^>]+>"
+)
+
+
+def load_html_chunks(
+    path,
+    chunk_size=DEFAULT_BATCH_SIZE
+):
+
+    try:
+
+        batch = []
+
+        with open(
+            path,
+            "r",
+            encoding="utf-8",
+            errors="replace"
+        ) as file:
+
+            for line in file:
+
+                line = HTML_TAG_PATTERN.sub(
+                    " ",
+                    line
+                )
+
+                line = line.strip()
+
+                if not line:
+                    continue
+
+                batch.append({
+                    "text": line
+                })
+
+                if len(batch) >= chunk_size:
+
+                    yield pl.DataFrame(batch)
+
+                    batch = []
+
+        if batch:
+
+            yield pl.DataFrame(batch)
+
+    except Exception as e:
+
+        raise DatasetLoadError(
+            f"HTML loader failed for {path}: {e}"
+        )
+
+
+def load_json_chunks(
+    path,
+    chunk_size=DEFAULT_BATCH_SIZE
+):
+
+    try:
+
+        batch = []
+
+        with open(
+            path,
+            "rb"
+        ) as file:
+
+            parser = ijson.kvitems(
+                file,
+                ""
+            )
+
+            for key, value in parser:
+
+                batch.append({
+
+                    "segment_id": str(key),
+
+                    "text": str(value)
+                })
+
+                if len(batch) >= chunk_size:
+
+                    yield pl.DataFrame(batch)
+
+                    batch = []
+
+        if batch:
+
+            yield pl.DataFrame(batch)
+
+    except Exception as e:
+
+        raise DatasetLoadError(
+            f"JSON loader failed for {path}: {e}"
+        )

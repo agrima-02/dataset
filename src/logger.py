@@ -13,6 +13,9 @@ def setup_logger():
         "buddhist_pipeline"
     )
 
+    if logger.handlers:
+        return logger
+
     logger.setLevel(
         logging.INFO
     )

@@ -1,55 +1,90 @@
-import re
-import unicodedata
 import polars as pl
+import unicodedata
 
-PAGE = re.compile(
-    r'\[.*?page.*?\]',
-    re.IGNORECASE
-)
-
-MULTISPACE = re.compile(r'\s+')
 
 UNWANTED = [
-    'copyright',
-    'isbn',
-    'gretil',
-    'disclaimer'
+
+    "copyright",
+
+    "isbn",
+
+    "gretil",
+
+    "disclaimer"
 ]
-def normalize_text(text):
-    text = unicodedata.normalize(
-        'NFKC',
+
+
+def normalize_unicode(text):
+
+    if text is None:
+
+        return ""
+
+    return unicodedata.normalize(
+        "NFKC",
         str(text)
     )
 
-    text = PAGE.sub(' ', text)
-    text = MULTISPACE.sub(
-        ' ',
-        text
-    )
-    return text.strip()
 
-def valid_text(text):
-    if not text:
-        return False
-    text = text.strip()
-    if len(text) < 3:
-        return False
-    lower = text.lower()
+def clean_text_column(
+    df,
+    column
+):
+
+    # Unicode normalization
+    # (still requires Python)
+
+    df = df.with_columns(
+
+        pl.col(column)
+
+        .map_elements(
+            normalize_unicode,
+            return_dtype=pl.Utf8
+        )
+    )
+
+    # Everything below stays inside Polars/Rust
+
+    df = df.with_columns(
+
+        pl.col(column)
+
+        .str.replace_all(
+            r"\[.*?page.*?\]",
+            ""
+        )
+
+        .str.replace_all(
+            r"\s+",
+            " "
+        )
+
+        .str.strip_chars()
+    )
+
+    # Remove empty text
+
+    df = df.filter(
+
+        pl.col(column)
+
+        .str.len_chars()
+
+        >= 3
+    )
+
+    # Remove unwanted metadata rows
 
     for pattern in UNWANTED:
-        if pattern in lower:
-            return False
-    return True
 
-def clean_text_column(df, column):
-    return (
-        df
-        .with_columns(
-            pl.col(column)
-            .map_elements(normalize_text)
+        df = df.filter(
+
+            ~pl.col(column)
+
+            .str.to_lowercase()
+
+            .str.contains(pattern)
         )
-        .filter(
-            pl.col(column)
-            .map_elements(valid_text)
-        )
-    )
+
+    return df
