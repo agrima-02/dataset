@@ -1,4 +1,5 @@
 import os
+import torch
 
 from concurrent.futures import (
     ThreadPoolExecutor,
@@ -54,6 +55,22 @@ from exceptions import (
 
 logger = setup_logger()
 
+logger.info(
+
+    f"GPU Available: "
+
+    f"{torch.cuda.is_available()}"
+)
+
+if torch.cuda.is_available():
+
+    logger.info(
+
+        f"GPU: "
+
+        f"{torch.cuda.get_device_name(0)}"
+    )
+    
 RAW_FOLDER = CONFIG["raw_folder"]
 
 OUTPUT_FOLDER = CONFIG["processed_folder"]

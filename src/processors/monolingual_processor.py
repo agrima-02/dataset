@@ -19,6 +19,10 @@ from exceptions import (
     DatasetSchemaError
 )
 
+from ai_filters import (
+    get_embeddings
+)
+
 def process_monolingual_file(
     path,
     writer

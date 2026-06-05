@@ -13,13 +13,16 @@ from language_detector import (
     detect_language
 )
 
+from ai_filters import (
+    get_embeddings
+)
+
+from sklearn.metrics.pairwise import (
+    cosine_similarity
+)
+
 from exceptions import (
-
     DatasetSchemaError,
-
-    DatasetValidationError,
-
-    DatasetAlignmentError
 )
 
 import logging
@@ -82,12 +85,58 @@ def process_parallel_table(
         )
 
         if len(df) == 0:
+            continue
 
-            raise DatasetValidationError(
+        sample_size = min(
+            100,
+            len(df)
+        )
 
-                f"No valid rows after cleaning: {path}"
-            )
+        if sample_size > 0:
 
+            try:
+
+                src_embeddings = get_embeddings(
+
+                    df["src_text"]
+                    .head(sample_size)
+                    .to_list()
+                )
+
+                tgt_embeddings = get_embeddings(
+
+                    df["tgt_text"]
+                    .head(sample_size)
+                    .to_list()
+                )
+
+                similarities = [
+
+                    cosine_similarity(
+                        [src_embeddings[i]],
+                        [tgt_embeddings[i]]
+                    )[0][0]
+
+                    for i in range(sample_size)
+                ]
+
+                avg_similarity = (
+                    sum(similarities)
+                    /
+                    len(similarities)
+                )
+
+                logger.info(
+                    f"LaBSE similarity ({path}): "
+                    f"{avg_similarity:.3f}"
+                )
+
+            except Exception as e:
+
+                logger.warning(
+                    f"LaBSE failed ({path}): {e}"
+                )
+                
         if detected_src_language is None:
 
             detected_src_language = detect_language(
@@ -233,11 +282,68 @@ def build_parallel_from_segments(
 
         if len(aligned) == 0:
             continue
+        sample_size = min(
+            100,
+            len(aligned)
+        )
+
+        if sample_size > 0:
+
+            try:
+
+                src_embeddings = get_embeddings(
+
+                    aligned["src_text"]
+                    .head(sample_size)
+                    .to_list()
+                )
+
+                tgt_embeddings = get_embeddings(
+
+                    aligned["tgt_text"]
+                    .head(sample_size)
+                    .to_list()
+                )
+
+                similarities = [
+
+                    cosine_similarity(
+                        [src_embeddings[i]],
+                        [tgt_embeddings[i]]
+                    )[0][0]
+
+                    for i in range(sample_size)
+                ]
+
+                avg_similarity = (
+                    sum(similarities)
+                    /
+                    len(similarities)
+                )
+
+                logger.info(
+
+                    f"LaBSE similarity "
+
+                    f"({src_path} <-> {tgt_path}): "
+
+                    f"{avg_similarity:.3f}"
+                )
+
+            except Exception as e:
+
+                logger.warning(
+
+                    f"LaBSE failed "
+
+                    f"({src_path} <-> {tgt_path}): "
+
+                    f"{e}"
+                )
 
         if detected_src_language is None:
 
             detected_src_language = detect_language(
-
                 aligned[0, "src_text"]
             )
 
