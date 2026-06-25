@@ -87,10 +87,10 @@ Then run:
 python src/main.py
 ```
 
-or
+or  (in the terminal)
 
 ```
-py -3.11 main.py (in the terminal)
+py -3.11 main.py
 ```
 or (depending on your system)
 
